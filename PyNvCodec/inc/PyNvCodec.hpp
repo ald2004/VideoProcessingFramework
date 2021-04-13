@@ -15,7 +15,6 @@
 
 #include "MemoryInterfaces.hpp"
 #include "NvCodecCLIOptions.h"
-#include "FFmpegDemuxer.h"
 #include "TC_CORE.hpp"
 #include "Tasks.hpp"
 
@@ -42,6 +41,17 @@ struct MotionVector {
   int dst_x, dst_y;
   int motion_x, motion_y;
   int motion_scale;
+};
+
+struct SharedMemoryHandle {
+    std::string triton_shm_name_;
+    std::string shm_key_;
+    cudaIpcMemHandle_t cuda_shm_handle_;
+    int device_id_;
+    void* base_addr_;
+    int shm_fd_;
+    size_t offset_;
+    size_t byte_size_;
 };
 
 class HwResetException : public std::runtime_error {
@@ -157,11 +167,10 @@ public:
   PyNvDecoder(const std::string &pathToFile, int gpuOrdinal,
               const std::map<std::string, std::string> &ffmpeg_options);
 
-  static Buffer *getElementaryVideo(DemuxFrame *demuxer, Buffer *&p_demuxed_ctx,
-                                    bool needSEI);
+  static Buffer *getElementaryVideo(DemuxFrame *demuxer, bool needSEI);
 
   static Surface *getDecodedSurface(NvdecDecodeFrame *decoder,
-                                    DemuxFrame *demuxer, PacketData &ctx,
+                                    DemuxFrame *demuxer,
                                     bool &hw_decoder_failure, bool needSEI);
 
   uint32_t Width() const;
@@ -186,21 +195,12 @@ public:
 
   std::shared_ptr<Surface> DecodeSingleSurface(py::array_t<uint8_t> &sei);
 
-  std::shared_ptr<Surface> DecodeSingleSurface(py::array_t<uint8_t> &sei, struct SeekContext &ctx);
-
   std::shared_ptr<Surface> DecodeSingleSurface();
-
-  std::shared_ptr<Surface> DecodeSingleSurface(struct SeekContext &ctx);
 
   bool DecodeSingleFrame(py::array_t<uint8_t> &frame,
                          py::array_t<uint8_t> &sei);
 
-  bool DecodeSingleFrame(py::array_t<uint8_t> &frame, py::array_t<uint8_t> &sei,
-                         struct SeekContext &ctx);
-
   bool DecodeSingleFrame(py::array_t<uint8_t> &frame);
-
-  bool DecodeSingleFrame(py::array_t<uint8_t> &frame, struct SeekContext &ctx);
 
   bool DecodeFrameFromPacket(py::array_t<uint8_t> &frame,
                              py::array_t<uint8_t> &packet,
@@ -208,6 +208,8 @@ public:
 
   bool DecodeFrameFromPacket(py::array_t<uint8_t> &frame,
                              py::array_t<uint8_t> &packet);
+
+  int CudaSharedMemoryRegionSet(void* cuda_shm_handle, size_t offset, size_t byte_size, const void* data);
 
   bool FlushSingleFrame(py::array_t<uint8_t> &frame);
 
@@ -217,7 +219,6 @@ private:
   bool DecodeSurface(struct DecodeContext &ctx);
 
   Surface *getDecodedSurfaceFromPacket(py::array_t<uint8_t> *pPacket,
-                                       PacketData &ctx,
                                        bool &hw_decoder_failure);
 };
 
@@ -298,3 +299,18 @@ public:
 private:
   bool EncodeSingleSurface(EncodeContext &ctx);
 };
+
+class PyNormalizer {
+    std::unique_ptr<NormalizeSurface> upResizer;
+    float divisor;
+    Pixel_Format outputFormat;
+    uint32_t gpuID;
+
+public:
+    PyNormalizer(uint32_t width, uint32_t height, float divisor, Pixel_Format format, uint32_t gpuID);
+
+    float Getdivisor();
+
+    std::shared_ptr<Surface> Execute(std::shared_ptr<Surface> surface);
+    Pixel_Format GetFormat();
+};    

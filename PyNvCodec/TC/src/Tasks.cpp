@@ -225,7 +225,6 @@ namespace VPF {
 struct NvdecDecodeFrame_Impl {
   NvDecoder nvDecoder;
   Surface *pLastSurface = nullptr;
-  Buffer *pDemuxedContext = nullptr;
   CUstream stream = 0;
   CUcontext context = nullptr;
   bool didDecode = false;
@@ -239,13 +238,9 @@ struct NvdecDecodeFrame_Impl {
       : stream(cuStream), context(cuContext),
         nvDecoder(cuStream, cuContext, videoCodec) {
     pLastSurface = Surface::Make(format);
-    pDemuxedContext = Buffer::MakeOwnMem(1U);
   }
 
-  ~NvdecDecodeFrame_Impl() {
-    delete pLastSurface;
-    delete pDemuxedContext;
-  }
+  ~NvdecDecodeFrame_Impl() { delete pLastSurface; }
 };
 } // namespace VPF
 
@@ -299,17 +294,8 @@ TaskExecStatus NvdecDecodeFrame::Execute() {
 
   CUdeviceptr surface = 0U;
   bool isSurfaceReturned = false;
-  
-  uint64_t timestamp = 0U;
-  auto demuxed_ctx_buf = (Buffer *)GetInput(1U);
-  if (demuxed_ctx_buf) {
-    auto demuxed_ctx_ptr = demuxed_ctx_buf->GetDataAs<PacketData>();
-    timestamp = demuxed_ctx_ptr->pts;
-    pImpl->pDemuxedContext->Update(sizeof(*demuxed_ctx_ptr), demuxed_ctx_ptr);
-  }
-
   auto res = decoder.DecodeLockSurface(pVideo, nVideoBytes, surface,
-                                       timestamp, isSurfaceReturned);
+                                       isSurfaceReturned);
   pImpl->didDecode = true;
   if (!res) {
     return TASK_EXEC_FAIL;
@@ -325,10 +311,7 @@ TaskExecStatus NvdecDecodeFrame::Execute() {
 
     SurfacePlane tmpPlane(rawW, rawH, rawP, sizeof(uint8_t), surface);
     pImpl->pLastSurface->Update(&tmpPlane, 1);
-
     SetOutput(pImpl->pLastSurface, 0U);
-    SetOutput(pImpl->pDemuxedContext, 1U);
-    
     return TASK_EXEC_SUCCESS;
   }
 
@@ -553,7 +536,6 @@ struct DemuxFrame_Impl {
   Buffer *pElementaryVideo;
   Buffer *pMuxingParams;
   Buffer *pSei;
-  Buffer *pContext;
 
   DemuxFrame_Impl() = delete;
   DemuxFrame_Impl(const DemuxFrame_Impl &other) = delete;
@@ -565,14 +547,12 @@ struct DemuxFrame_Impl {
     pElementaryVideo = Buffer::MakeOwnMem(0U);
     pMuxingParams = Buffer::MakeOwnMem(sizeof(MuxingParams));
     pSei = Buffer::MakeOwnMem(0U);
-    pContext = Buffer::MakeOwnMem(0U);
   }
 
   ~DemuxFrame_Impl() {
     delete pElementaryVideo;
     delete pMuxingParams;
     delete pSei;
-    delete pContext;
   }
 };
 } // namespace VPF
@@ -606,7 +586,6 @@ TaskExecStatus DemuxFrame::Execute() {
 
   uint8_t *pVideo = nullptr;
   MuxingParams params = {0};
-  PacketData pkt_data = {0};
 
   auto &videoBytes = pImpl->videoBytes;
   auto &demuxer = pImpl->demuxer;
@@ -615,13 +594,13 @@ TaskExecStatus DemuxFrame::Execute() {
   size_t seiBytes = 0U;
   bool needSEI = (nullptr != GetInput(0U));
 
-  if (!demuxer.Demux(pVideo, videoBytes, pkt_data, needSEI ? &pSEI : nullptr,
-                     &seiBytes)) {
+  if (!demuxer.Demux(pVideo, videoBytes, needSEI ? &pSEI : nullptr, &seiBytes)) {
     return TASK_EXEC_FAIL;
   }
 
   if (videoBytes) {
     pImpl->pElementaryVideo->Update(videoBytes, pVideo);
+    pImpl->demuxer.GetLastPacketData(params.videoContext.packetData);
     SetOutput(pImpl->pElementaryVideo, 0U);
 
     GetParams(params);
@@ -634,13 +613,8 @@ TaskExecStatus DemuxFrame::Execute() {
     SetOutput(pImpl->pSei, 2U);
   }
 
-  pImpl->pContext->Update(sizeof(pkt_data), &pkt_data);
-  SetOutput(pImpl->pContext, 3U);
-
   return TASK_EXEC_SUCCESS;
 }
-
-void DemuxFrame::Seek(SeekContext &ctx) { pImpl->demuxer.Seek(&ctx); }
 
 void DemuxFrame::GetParams(MuxingParams &params) const {
   params.videoContext.width = pImpl->demuxer.GetWidth();
@@ -649,11 +623,15 @@ void DemuxFrame::GetParams(MuxingParams &params) const {
   params.videoContext.timeBase = pImpl->demuxer.GetTimebase();
   params.videoContext.streamIndex = pImpl->demuxer.GetVideoStreamIndex();
   params.videoContext.codec = FFmpeg2NvCodecId(pImpl->demuxer.GetVideoCodec());
-
+  
   switch (pImpl->demuxer.GetPixelFormat()) {
   case AV_PIX_FMT_YUVJ420P:
+    //cout<<pImpl->demuxer.GetPixelFormat()<<"=========================="<<flush;
   case AV_PIX_FMT_YUV420P:
+      /*params.videoContext.format = YUV420;
+      break;*/
   case AV_PIX_FMT_NV12:
+  //case AV_PIX_FMT_YUV422P:
     params.videoContext.format = NV12;
     break;
   case AV_PIX_FMT_YUV444P:
@@ -818,6 +796,7 @@ TaskExecStatus MuxFrame::Execute() {
     pkt.stream_index = FindMappedStreamIndex(streamMapping, nativeStreamIndex);
 
     auto timeBase = stream->time_base;
+    auto &packetData = muxParams.videoContext.packetData;
     pkt.pos = -1;
 
     auto ret = av_interleaved_write_frame(outFmtCtx, &pkt);
@@ -882,19 +861,19 @@ struct NppResizeSurfacePacked3C_Impl final : ResizeSurface_Impl {
     auto dstPlane = pSurface->GetSurfacePlane();
 
     const Npp8u *pSrc = (const Npp8u *)srcPlane->GpuMem();
-    int nSrcStep = (int)source.Pitch();
+    int nSrcStep = (int)srcPlane->Pitch();
     NppiSize oSrcSize = {0};
-    oSrcSize.width = source.Width();
-    oSrcSize.height = source.Height();
+    oSrcSize.width = srcPlane->Width();
+    oSrcSize.height = srcPlane->Height();
     NppiRect oSrcRectROI = {0};
     oSrcRectROI.width = oSrcSize.width;
     oSrcRectROI.height = oSrcSize.height;
 
     Npp8u *pDst = (Npp8u *)dstPlane->GpuMem();
-    int nDstStep = (int)pSurface->Pitch();
+    int nDstStep = (int)dstPlane->Pitch();
     NppiSize oDstSize = {0};
-    oDstSize.width = pSurface->Width();
-    oDstSize.height = pSurface->Height();
+    oDstSize.width = dstPlane->Width();
+    oDstSize.height = dstPlane->Height();
     NppiRect oDstRectROI = {0};
     oDstRectROI.width = oDstSize.width;
     oDstRectROI.height = oDstSize.height;
@@ -973,7 +952,83 @@ struct NppResizeSurfacePlanar420_Impl final : ResizeSurface_Impl {
     return TASK_EXEC_SUCCESS;
   }
 };
+struct NormalizeSurface_Impl {
+    Surface* pSurface = nullptr;
+    CUcontext cu_ctx;
+    CUstream cu_str;
+    //cublasHandle_t cublasHandle;
+    float divisor;
 
+    NormalizeSurface_Impl(uint32_t width, uint32_t height, float divisor,
+        CUcontext ctx, CUstream str, Pixel_Format format)
+        : cu_ctx(ctx), cu_str(str), divisor(divisor) {
+        //SetupCublasContext(cu_ctx, cu_str, cublasHandle);
+    }
+
+    virtual ~NormalizeSurface_Impl() = default;
+
+    virtual TaskExecStatus Execute(Surface& source) = 0;
+};
+struct NormalizeSurfacefloat32_Impl final : NormalizeSurface_Impl {
+    NormalizeSurfacefloat32_Impl(uint32_t width, uint32_t height, float divisor, CUcontext ctx,
+        CUstream str, Pixel_Format format)
+        :NormalizeSurface_Impl(width, height, divisor, ctx, str, format) {
+        //vvvvvvvvvvvvvv 1080 720 9
+        //printf("vvvvvvvvvvvvvv %d %d %d \n", width, height,format);
+        pSurface = Surface::Make(format, width, height, ctx);
+        // dest surface element size is : 4 
+        //printf("dest surface element size is : %d \n", pSurface->ElemSize());fflush(stdout);
+    }
+    ~NormalizeSurfacefloat32_Impl() { delete pSurface; /*cublasDestroy(cublasHandle);*/ }
+    TaskExecStatus Execute(Surface& source) {
+        /*if (pSurface->PixelFormat() != source.PixelFormat()) {
+            return TaskExecStatus::TASK_EXEC_FAIL;
+        }*/
+
+        auto srcPlane = source.GetSurfacePlane();
+        auto dstPlane = pSurface->GetSurfacePlane(); 
+
+        //const float* pSrc = (const float*)srcPlane->GpuMem();
+        const uint8_t* pSrc = (uint8_t*)srcPlane->GpuMem();
+        float* pDst = (float*)dstPlane->GpuMem(); 
+        int w = srcPlane->Width(), h = srcPlane->Height();
+        CudaCtxPush ctxPush(cu_ctx);
+
+        //1111111111111 3240 720 3 4 
+        //printf("xxxxxxxxxxxxxxx %d %d %d %d \n",w,h,3,sizeof(float)); fflush(stdout);
+        /*uint8_t* x;
+        int count = 0,sumall=0;
+        x = (uint8_t*)malloc(w * h * sizeof(uint8_t));
+        cudaMemcpy(x, pSrc, w * h * sizeof(uint8_t), cudaMemcpyDeviceToHost);
+        for (int i = 0; i < w * h; i++) {
+            sumall += x[i];
+            if (x[i] != 1U)
+                count += 1;
+        }
+        printf("1111111111111 %d %d \n",count, sumall); fflush(stdout);*/
+
+        //void xxxkernel(const uint8_t * input, size_t sPitch, float* output, size_t dPitch, int nSrcWidth, int nSrcHeight, cudaStream_t S, float did);
+        //printf("1111111111111 %f %f \n", divisor, divisor); fflush(stdout); 
+        xxxkernel(pSrc, srcPlane->Pitch(), pDst, dstPlane->Pitch(), w,h, cu_str, divisor);
+
+        //cublasSscal(cublasHandle, w * h, &divisor, pDst, 0 );
+
+        /*printf("22222222222222 \n"); fflush(stdout);
+        float* y;
+        y = (float*)malloc(w * h * sizeof(float));
+        cudaMemcpy(y, pDst, w * h * sizeof(float), cudaMemcpyDeviceToHost);
+        for (int i = w * h-100; i < w * h; i++)
+            printf("%f ", y[i]);
+        
+        printf("333333333333 \n"); fflush(stdout);
+        for (int i = 0; i < 100; i++)
+            printf("%f ", y[i]);
+        printf("44444444444 \n"); fflush(stdout);*/
+
+
+        return TASK_EXEC_SUCCESS;
+    }
+};
 }; // namespace VPF
 
 ResizeSurface::ResizeSurface(uint32_t width, uint32_t height,
@@ -1015,3 +1070,32 @@ ResizeSurface *ResizeSurface::Make(uint32_t width, uint32_t height,
                                    CUstream str) {
   return new ResizeSurface(width, height, format, ctx, str);
 }
+
+NormalizeSurface::NormalizeSurface(uint32_t width, uint32_t height, float divisor, CUcontext ctx, CUstream str, Pixel_Format format)
+    :Task("NormalizeSurface", NormalizeSurface::numInputs, NormalizeSurface::numOutputs) {
+
+    //xxxxxx 1080 720 9 
+    //printf("xxxxxx %d %d %d \n", width, height, format);
+    pImpl = new NormalizeSurfacefloat32_Impl(width, height, divisor, ctx, str, format);
+}
+NormalizeSurface::~NormalizeSurface() { delete pImpl; }
+TaskExecStatus NormalizeSurface::Execute() {
+    ClearOutputs();
+    auto pInputSurface = (Surface*)GetInput();
+    if (!pInputSurface) {
+        return TASK_EXEC_FAIL;
+    }
+
+    if (TASK_EXEC_SUCCESS != pImpl->Execute(*pInputSurface)) {
+        return TASK_EXEC_FAIL;
+    }
+
+    SetOutput(pImpl->pSurface, 0U);
+
+
+    return TASK_EXEC_SUCCESS;
+}
+NormalizeSurface* NormalizeSurface::Make(uint32_t width, uint32_t height,
+    float divisor, CUcontext ctx, CUstream str, Pixel_Format format) {
+    return new NormalizeSurface(width, height, divisor, ctx, str, format);
+} 

@@ -69,8 +69,8 @@ public:
                                 Pixel_Format format);
 
 private:
-  static const uint32_t numInputs = 2U;
-  static const uint32_t numOutputs = 2U;
+  static const uint32_t numInputs = 1U;
+  static const uint32_t numOutputs = 1U;
   struct NvdecDecodeFrame_Impl *pImpl = nullptr;
 
   NvdecDecodeFrame(CUstream cuStream, CUcontext cuContext,
@@ -149,7 +149,6 @@ public:
   DemuxFrame &operator=(const DemuxFrame &other) = delete;
 
   void GetParams(struct MuxingParams &params) const;
-  void Seek(struct SeekContext &ctx);
   TaskExecStatus Execute() final;
   ~DemuxFrame() final;
   static DemuxFrame *Make(const char *url, const char **ffmpeg_options,
@@ -158,7 +157,7 @@ public:
 private:
   DemuxFrame(const char *url, const char **ffmpeg_options, uint32_t opts_size);
   static const uint32_t numInputs = 1U;
-  static const uint32_t numOutputs = 4U;
+  static const uint32_t numOutputs = 3U;
   struct DemuxFrame_Impl *pImpl = nullptr;
 };
 
@@ -224,5 +223,25 @@ private:
   struct ResizeSurface_Impl *pImpl;
   ResizeSurface(uint32_t width, uint32_t height, Pixel_Format format,
                 CUcontext ctx, CUstream str);
+};
+
+class DllExport NormalizeSurface final: public Task{
+    public:
+        NormalizeSurface() = delete;
+        NormalizeSurface(const NormalizeSurface& other) = delete;
+        NormalizeSurface& operator=(const NormalizeSurface& other) = delete;
+
+        static NormalizeSurface* Make(uint32_t width, uint32_t height,
+            float divisor, CUcontext ctx, CUstream str,Pixel_Format format);
+
+        ~NormalizeSurface();
+
+        TaskExecStatus Execute() final;
+    private:
+        static const uint32_t numInputs = 1U;
+        static const uint32_t numOutputs = 1U;
+
+        struct NormalizeSurface_Impl* pImpl;
+        NormalizeSurface(uint32_t width, uint32_t height, float divisor,CUcontext ctx, CUstream str,Pixel_Format format);
 };
 } // namespace VPF
