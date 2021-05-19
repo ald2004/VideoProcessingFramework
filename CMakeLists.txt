@@ -51,6 +51,7 @@ install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/PyNvCodec/TC/inc/MemoryInterfaces.hpp 
 install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/PyNvCodec/TC/inc/NppCommon.hpp DESTINATION include)
 install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/PyNvCodec/TC/inc/Tasks.hpp DESTINATION include)
 install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/PyNvCodec/TC/inc/Version.hpp DESTINATION include)
+install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/PyNvCodec/TC/TC_CORE/inc/TC_CORE.hpp DESTINATION include)
 
 if(GENERATE_PYTHON_BINDINGS)
 	install(FILES $<TARGET_FILE:PyNvCodec>									DESTINATION bin)
