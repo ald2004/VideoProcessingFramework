@@ -44,6 +44,9 @@ constexpr auto TASK_EXEC_SUCCESS = TaskExecStatus::TASK_EXEC_SUCCESS;
 constexpr auto TASK_EXEC_FAIL = TaskExecStatus::TASK_EXEC_FAIL;
 
 namespace VPF {
+auto const cuda_stream_sync = [](void *stream) {
+  cuStreamSynchronize((CUstream)stream);
+};
 
 struct NvencEncodeFrame_Impl {
   using packet = vector<uint8_t>;
@@ -225,6 +228,7 @@ namespace VPF {
 struct NvdecDecodeFrame_Impl {
   NvDecoder nvDecoder;
   Surface *pLastSurface = nullptr;
+  Buffer *pPacketData = nullptr;
   CUstream stream = 0;
   CUcontext context = nullptr;
   bool didDecode = false;
@@ -238,9 +242,10 @@ struct NvdecDecodeFrame_Impl {
       : stream(cuStream), context(cuContext),
         nvDecoder(cuStream, cuContext, videoCodec) {
     pLastSurface = Surface::Make(format);
+    pPacketData = Buffer::MakeOwnMem(sizeof(PacketData));;
   }
 
-  ~NvdecDecodeFrame_Impl() { delete pLastSurface; }
+  ~NvdecDecodeFrame_Impl() { delete pLastSurface; delete pPacketData;}
 };
 } // namespace VPF
 
@@ -263,7 +268,7 @@ NvdecDecodeFrame::NvdecDecodeFrame(CUstream cuStream, CUcontext cuContext,
     :
 
       Task("NvdecDecodeFrame", NvdecDecodeFrame::numInputs,
-           NvdecDecodeFrame::numOutputs) {
+           NvdecDecodeFrame::numOutputs, cuda_stream_sync, (void *)cuStream) {
   pImpl = new NvdecDecodeFrame_Impl(cuStream, cuContext, videoCodec, format);
 }
 
@@ -536,6 +541,7 @@ struct DemuxFrame_Impl {
   Buffer *pElementaryVideo;
   Buffer *pMuxingParams;
   Buffer *pSei;
+  Buffer *pPktData;
 
   DemuxFrame_Impl() = delete;
   DemuxFrame_Impl(const DemuxFrame_Impl &other) = delete;
@@ -545,8 +551,11 @@ struct DemuxFrame_Impl {
                            const map<string, string> &ffmpeg_options)
       : demuxer(url.c_str(), ffmpeg_options) {
     pElementaryVideo = Buffer::MakeOwnMem(0U);
+    //cout <<"ffffffffffffffffffffffffffff"<<sizeof(MuxingParams)<<"ffffffffffffff" << endl << flush; 
+     // 80
     pMuxingParams = Buffer::MakeOwnMem(sizeof(MuxingParams));
     pSei = Buffer::MakeOwnMem(0U);
+    pPktData = Buffer::MakeOwnMem(0U);
   }
 
   ~DemuxFrame_Impl() {

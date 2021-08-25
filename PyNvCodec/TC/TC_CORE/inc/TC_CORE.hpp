@@ -61,9 +61,10 @@ public:
    */
   virtual TaskExecStatus Run();
 
-  /* Call this method to run the task;
+
+  /* Method implemented in ancestors;
    */
-  virtual TaskExecStatus Execute();
+  virtual TaskExecStatus Execute() = 0;
 
   /* Sets given token as input;
    * Doesn't take ownership of object passed by pointer, only stores it

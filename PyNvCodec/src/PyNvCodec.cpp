@@ -400,7 +400,7 @@ PyNvDecoder::PyNvDecoder(const string &pathToFile, int gpuOrdinal,
     gpuOrdinal = 0U;
   }
   gpuID = gpuOrdinal;
-  //cout << "Decoding on GPU " << gpuID << endl;
+  cout << "Decoding on GPU " << gpuID << endl;
 
   vector<const char *> options;
   for (auto &pair : ffmpeg_options) {
